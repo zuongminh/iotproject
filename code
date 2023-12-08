@@ -1,0 +1,131 @@
+#define BLYNK_PRINT Serial
+#define BLYNK_TEMPLATE_ID "TMPL6JVR3U7RW"
+#define BLYNK_TEMPLATE_NAME "Motion Detected"
+
+#include <Blynk.h>
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+
+char auth[] = "WedfQkn9vSe_qsZSp_W4fTmEKsqdeAXZ";
+char ssid[] = "RUFUS";
+char pass[] = "11111111";
+
+const int buzzerPin = D2;
+const int sensorPin = D1;
+
+const int debounceTime = 500; // Debounce time in milliseconds
+const int motionThreshold = 3; // Number of consecutive HIGH readings for motion
+const int motionDuration = 2000; // Minimum duration of HIGH readings for motion
+const int adaptiveSensitivityThreshold = 10; // Number of false positives before sensitivity reduction
+const int adaptiveSensitivityReductionFactor = 0.5;
+int motionCounter = 0; // Factor by which sensitivity is reduced
+
+bool motionDetected = false;
+bool motionTriggered = false;
+unsigned long lastMotionDetectedTime = 0;
+unsigned long lastSensorReadingTime = 0;
+unsigned long lastMotionStartedTime = 0;
+unsigned long falsePositivesCount = 0;
+int sensorSensitivity = 100; // Initial sensitivity level (0-100)
+
+bool programEnabled = false; // Variable to control program enable/disable
+
+void setup() {
+  Serial.begin(9600);
+
+  Blynk.begin(auth, ssid, pass);
+
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(sensorPin, INPUT);
+
+  digitalWrite(buzzerPin, LOW);
+}
+
+void loop() {
+  Blynk.run();
+
+  if (programEnabled) {
+    unsigned long currentTime = millis();
+    bool motionDetected = false;
+
+    // Check sensor reading only after debounce time has elapsed
+    if (currentTime - lastSensorReadingTime >= debounceTime) {
+      int sensorStatus = digitalRead(sensorPin);
+
+      if (sensorStatus == HIGH) {
+        // Check if motion was detected in the last debounce period
+        if (currentTime - lastMotionDetectedTime < debounceTime) {
+          // Ignore the current reading as it's likely a false positive
+          Serial.println("Ignoring false motion detection");
+        } else {
+          // Motion detection is valid, proceed with actions
+          Serial.println("Motion detected!");
+
+          // Check if motion has been triggered in the last motion duration
+          if (!motionTriggered || currentTime - lastMotionStartedTime >= motionDuration) {
+            // Motion has not been triggered or has expired, start new motion event
+            motionTriggered = true;
+            lastMotionStartedTime = currentTime;
+            falsePositivesCount = 0; // Reset false positives count
+          }
+
+          // Increment motion counter
+          motionTriggered = motionTriggered && ++motionCounter >= motionThreshold;
+
+          // If motion threshold reached, activate the alarm and notify Blynk
+          if (motionTriggered) {
+            activateAlarm();
+            Blynk.virtualWrite(V1, 1);
+            motionDetected = true;
+            lastMotionDetectedTime = currentTime;
+            Blynk.logEvent("motion_detected", "Motion detected!");    
+          }
+        }
+      } else {
+        // No motion detected, but check if buzzer is still ringing
+        if (motionDetected) {
+          Serial.println("Motion disappeared, turning off buzzer");
+          deactivateAlarm();
+          motionDetected = false;
+          motionTriggered = false; // Reset motion trigger flag
+
+        }
+      }
+
+      lastSensorReadingTime = currentTime;
+    }
+
+    // Implement adaptive sensitivity mechanism
+    if (falsePositivesCount >= adaptiveSensitivityThreshold) {
+      // Reduce sensor sensitivity to minimize false positives
+      sensorSensitivity = sensorSensitivity * adaptiveSensitivityReductionFactor;
+      Serial.println("Reducing sensor sensitivity to " + String(sensorSensitivity));
+      falsePositivesCount = 0; // Reset false positives count
+    }
+  } else {
+    // Program is disabled, perform any necessary actions or put the board in a low-power state.
+    // For example, you can turn off the alarm or put the board to sleep.
+    deactivateAlarm();
+    motionCounter = 0;
+     // Reset the notificationSent flag when the program is disabled
+    delay(100);
+  }
+}
+void activateAlarm() {
+  digitalWrite(buzzerPin, HIGH);
+  delay(2000);
+}
+
+void deactivateAlarm() {
+  digitalWrite(buzzerPin, LOW);
+  delay(10);
+}
+
+BLYNK_WRITE(V2) {
+  int buttonState = param.asInt();
+  programEnabled = buttonState == 1;
+  if (!programEnabled) {
+    deactivateAlarm();
+    motionCounter = 0;
+  }
+}
